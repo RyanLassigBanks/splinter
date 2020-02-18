@@ -56,11 +56,15 @@ mod events;
 pub mod paging;
 mod response_models;
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use actix_web::{
     error::ErrorBadRequest, middleware, web, App, Error as ActixError, HttpRequest, HttpResponse,
     HttpServer,
 };
-use futures::{future::FutureResult, stream::Stream, Future, IntoFuture};
+use futures::StreamExt;
 use percent_encoding::{AsciiSet, CONTROLS};
 use protobuf::{self, Message};
 use std::boxed::Box;
@@ -94,10 +98,7 @@ pub trait RestResourceProvider {
 }
 
 pub type HandlerFunction = Box<
-    dyn Fn(HttpRequest, web::Payload) -> Box<dyn Future<Item = HttpResponse, Error = ActixError>>
-        + Send
-        + Sync
-        + 'static,
+    dyn Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError> + Send + Sync + 'static,
 >;
 
 /// Shutdown handle returned by `RestApi::run`. Allows rest api instance to be shut down
@@ -134,13 +135,18 @@ impl From<HttpResponse> for Response {
     }
 }
 
-impl IntoFuture for Response {
-    type Item = HttpResponse;
-    type Error = ActixError;
-    type Future = FutureResult<HttpResponse, ActixError>;
+impl Future for Response {
+    type Output = Result<HttpResponse, ActixError>;
 
-    fn into_future(self) -> Self::Future {
-        self.0.into_future()
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+        loop {
+            match unsafe { Pin::new_unchecked(&mut this.0) }.poll_next(ctx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => return Poll::Ready(Ok(this.0)),
+                Poll::Ready(Some(res)) => return Poll::Ready(Ok(res)),
+            };
+        }
     }
 }
 
@@ -188,10 +194,7 @@ impl Resource {
     #[deprecated(note = "Please use the `build` and `add_method` methods instead")]
     pub fn new<F>(method: Method, route: &str, handle: F) -> Self
     where
-        F: Fn(
-                HttpRequest,
-                web::Payload,
-            ) -> Box<dyn Future<Item = HttpResponse, Error = ActixError>>
+        F: Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError>
             + Send
             + Sync
             + 'static,
@@ -209,10 +212,7 @@ impl Resource {
 
     pub fn add_method<F>(mut self, method: Method, handle: F) -> Self
     where
-        F: Fn(
-                HttpRequest,
-                web::Payload,
-            ) -> Box<dyn Future<Item = HttpResponse, Error = ActixError>>
+        F: Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError>
             + Send
             + Sync
             + 'static,
@@ -279,12 +279,12 @@ impl Resource {
                     (handler)(r, p)
                 };
                 resource.route(match method {
-                    Method::Get => web::get().to_async(func),
-                    Method::Post => web::post().to_async(func),
-                    Method::Put => web::put().to_async(func),
-                    Method::Patch => web::patch().to_async(func),
-                    Method::Delete => web::delete().to_async(func),
-                    Method::Head => web::head().to_async(func),
+                    Method::Get => web::get().to(func),
+                    Method::Post => web::post().to(func),
+                    Method::Put => web::put().to(func),
+                    Method::Patch => web::patch().to(func),
+                    Method::Delete => web::delete().to(func),
+                    Method::Head => web::head().to(func),
                 })
             })
     }
@@ -294,14 +294,14 @@ impl Resource {
 /// return a result.
 pub enum Continuation {
     Continue,
-    Terminate(Box<dyn Future<Item = HttpResponse, Error = ActixError>>),
+    Terminate(Result<HttpResponse, ActixError>),
 }
 
 impl Continuation {
     /// Wraps the given future in the Continuation::Terminate variant.
     pub fn terminate<F>(fut: F) -> Continuation
     where
-        F: Future<Item = HttpResponse, Error = ActixError> + 'static,
+        F: Future<Output = Result<HttpResponse, ActixError>> + 'static,
     {
         Continuation::Terminate(Box::new(fut))
     }
@@ -364,50 +364,42 @@ impl RequestGuard for ProtocolVersionRangeGuard {
                     })
                 });
             match parsed_header {
-                Err(msg) => Continuation::terminate(
-                    HttpResponse::BadRequest()
-                        .json(json!({
-                            "message": msg,
-                        }))
-                        .into_future(),
-                ),
-                Ok(version) if version < self.min => Continuation::terminate(
-                    HttpResponse::BadRequest()
-                        .json(json!({
-                            "message": format!(
-                                "Client must support protocol version {} or greater.",
-                                self.min,
-                            ),
-                            "requested_protocol": version,
-                            "splinter_protocol": self.max,
-                            "libsplinter_version": format!(
-                                "{}.{}.{}",
-                                env!("CARGO_PKG_VERSION_MAJOR"),
-                                env!("CARGO_PKG_VERSION_MINOR"),
-                                env!("CARGO_PKG_VERSION_PATCH")
-                            )
-                        }))
-                        .into_future(),
-                ),
-                Ok(version) if version > self.max => Continuation::terminate(
-                    HttpResponse::BadRequest()
-                        .json(json!({
-                            "message": format!(
-                                "Client requires a newer protocol than can be provided: {} > {}",
-                                version,
-                                self.max,
-                            ),
-                            "requested_protocol": version,
-                            "splinter_protocol": self.max,
-                            "libsplinter_version": format!(
-                                "{}.{}.{}",
-                                env!("CARGO_PKG_VERSION_MAJOR"),
-                                env!("CARGO_PKG_VERSION_MINOR"),
-                                env!("CARGO_PKG_VERSION_PATCH")
-                            )
-                        }))
-                        .into_future(),
-                ),
+                Err(msg) => Continuation::terminate(HttpResponse::BadRequest().json(json!({
+                    "message": msg,
+                }))),
+                Ok(version) if version < self.min => {
+                    Continuation::terminate(HttpResponse::BadRequest().json(json!({
+                        "message": format!(
+                            "Client must support protocol version {} or greater.",
+                            self.min,
+                        ),
+                        "requested_protocol": version,
+                        "splinter_protocol": self.max,
+                        "libsplinter_version": format!(
+                            "{}.{}.{}",
+                            env!("CARGO_PKG_VERSION_MAJOR"),
+                            env!("CARGO_PKG_VERSION_MINOR"),
+                            env!("CARGO_PKG_VERSION_PATCH")
+                        )
+                    })))
+                }
+                Ok(version) if version > self.max => {
+                    Continuation::terminate(HttpResponse::BadRequest().json(json!({
+                        "message": format!(
+                            "Client requires a newer protocol than can be provided: {} > {}",
+                            version,
+                            self.max,
+                        ),
+                        "requested_protocol": version,
+                        "splinter_protocol": self.max,
+                        "libsplinter_version": format!(
+                            "{}.{}.{}",
+                            env!("CARGO_PKG_VERSION_MAJOR"),
+                            env!("CARGO_PKG_VERSION_MINOR"),
+                            env!("CARGO_PKG_VERSION_PATCH")
+                        )
+                    })))
+                }
                 Ok(_) => Continuation::Continue,
             }
         } else {
@@ -453,7 +445,7 @@ impl RestApi {
                     }
                 };
 
-                let addr = server.disable_signals().system_exit().start();
+                let addr = server.disable_signals().system_exit().run();
 
                 if let Err(err) = tx.send(addr) {
                     error!("Unable to send Server Addr: {}", err);
@@ -531,31 +523,23 @@ impl RestApiBuilder {
     }
 }
 
-pub fn into_protobuf<M: Message>(
-    payload: web::Payload,
-) -> impl Future<Item = M, Error = ActixError> {
-    payload
-        .from_err::<ActixError>()
-        .fold(web::BytesMut::new(), move |mut body, chunk| {
-            body.extend_from_slice(&chunk);
-            Ok::<_, ActixError>(body)
-        })
-        .and_then(|body| match protobuf::parse_from_bytes::<M>(&body) {
-            Ok(proto) => Ok(proto),
-            Err(err) => Err(ErrorBadRequest(json!({ "message": format!("{}", err) }))),
-        })
-        .into_future()
+pub async fn into_protobuf<M: Message>(payload: web::Payload) -> Result<M, ActixError> {
+    let mut bytes = web::BytesMut::new();
+    while let Some(body) = payload.next().await {
+        bytes.extend_from_slice(&body?);
+    }
+    match protobuf::parse_from_bytes::<M>(&bytes) {
+        Ok(proto) => Ok(proto),
+        Err(err) => Err(ErrorBadRequest(json!({ "message": format!("{}", err) }))),
+    }
 }
 
-pub fn into_bytes(payload: web::Payload) -> impl Future<Item = Vec<u8>, Error = ActixError> {
-    payload
-        .from_err::<ActixError>()
-        .fold(web::BytesMut::new(), move |mut body, chunk| {
-            body.extend_from_slice(&chunk);
-            Ok::<_, ActixError>(body)
-        })
-        .and_then(|body| Ok(body.to_vec()))
-        .into_future()
+pub async fn into_bytes(payload: web::Payload) -> Result<Vec<u8>, ActixError> {
+    let mut bytes = web::BytesMut::new();
+    while let Some(body) = payload.next().await {
+        bytes.extend_from_slice(&body?);
+    }
+    Ok(bytes.to_vec())
 }
 
 pub fn percent_encode_filter_query(input: &str) -> String {
@@ -595,7 +579,7 @@ mod test {
     fn test_resource() {
         Resource::build("/test")
             .add_method(Method::Get, |_: HttpRequest, _: web::Payload| {
-                Box::new(Response::Ok().finish().into_future())
+                Box::new(Response::Ok().finish())
             })
             .into_route();
     }
@@ -604,10 +588,10 @@ mod test {
     fn test_resource_with_guard() {
         Resource::build("/test-guarded")
             .add_request_guard(|_: &HttpRequest| {
-                Continuation::terminate(Response::BadRequest().finish().into_future())
+                Continuation::terminate(Response::BadRequest().finish())
             })
             .add_method(Method::Get, |_: HttpRequest, _: web::Payload| {
-                Box::new(Response::Ok().finish().into_future())
+                Box::new(Response::Ok().finish())
             })
             .into_route();
     }

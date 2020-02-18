@@ -18,8 +18,8 @@ use std::time::Duration;
 use actix::prelude::*;
 use actix_web_actors::ws::{self, CloseCode, CloseReason};
 use futures::{
-    stream::{iter_ok, Stream},
-    sync::mpsc::{unbounded, UnboundedSender},
+    channel::mpsc::{unbounded, UnboundedSender},
+    stream::iter,
 };
 use serde::ser::Serialize;
 use serde_json;
@@ -37,7 +37,7 @@ pub fn new_websocket_event_sender<T: Serialize + Debug>(
 
     let (request, payload) = req.into();
 
-    let stream = iter_ok::<_, ()>(initial_events.map(MessageWrapper::Message)).chain(recv);
+    let stream = iter::<_>(initial_events.map(MessageWrapper::Message)).chain(recv);
 
     let res = ws::start(
         EventSenderWebSocket::new(Box::new(stream)),
@@ -94,21 +94,21 @@ impl<T: Serialize + Debug + 'static> Drop for EventSender<T> {
 pub struct EventSendError<T: Serialize + Debug + 'static>(pub T);
 
 struct EventSenderWebSocket<T: Serialize + Debug + 'static> {
-    stream: Option<Box<dyn Stream<Item = MessageWrapper<T>, Error = ()>>>,
+    stream: Option<Box<dyn Stream<Item = MessageWrapper<T>>>>,
 }
 
 impl<T: Serialize + Debug + 'static> EventSenderWebSocket<T> {
-    fn new(stream: Box<dyn Stream<Item = MessageWrapper<T>, Error = ()>>) -> Self {
+    fn new(stream: Box<dyn Stream<Item = MessageWrapper<T>>>) -> Self {
         Self {
             stream: Some(stream),
         }
     }
 }
 
-impl<T: Serialize + Debug + 'static> StreamHandler<MessageWrapper<T>, ()>
+impl<T: Serialize + Debug + 'static> StreamHandler<Result<MessageWrapper<T>, ()>>
     for EventSenderWebSocket<T>
 {
-    fn handle(&mut self, msg: MessageWrapper<T>, ctx: &mut Self::Context) {
+    fn handle(&mut self, msg: Result<MessageWrapper<T>, ()>, ctx: &mut Self::Context) {
         match msg {
             MessageWrapper::Message(msg) => {
                 debug!("Received a message: {:?}", msg);
@@ -129,16 +129,6 @@ impl<T: Serialize + Debug + 'static> StreamHandler<MessageWrapper<T>, ()>
             }
         }
     }
-
-    fn error(&mut self, _: (), ctx: &mut Self::Context) -> Running {
-        debug!("Received channel disconnect");
-        ctx.close(Some(CloseReason {
-            description: None,
-            code: CloseCode::Error,
-        }));
-
-        Running::Stop
-    }
 }
 
 impl<T: Serialize + Debug + 'static> Actor for EventSenderWebSocket<T> {
@@ -150,7 +140,7 @@ impl<T: Serialize + Debug + 'static> Actor for EventSenderWebSocket<T> {
             ctx.add_stream(stream);
             ctx.run_interval(Duration::from_secs(PING_INTERVAL), move |_, ctx| {
                 trace!("Sending Ping");
-                ctx.ping("");
+                ctx.ping(b"");
             });
         } else {
             warn!("Event dealer websocket was unexpectedly started twice; ignoring");
@@ -158,16 +148,16 @@ impl<T: Serialize + Debug + 'static> Actor for EventSenderWebSocket<T> {
     }
 }
 
-impl<T: Serialize + Debug + 'static> StreamHandler<ws::Message, ws::ProtocolError>
+impl<T: Serialize + Debug + 'static> StreamHandler<Result<ws::Message, ws::ProtocolError>>
     for EventSenderWebSocket<T>
 {
-    fn handle(&mut self, msg: ws::Message, ctx: &mut Self::Context) {
+    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
-            ws::Message::Ping(msg) => ctx.ping(&msg),
-            ws::Message::Pong(msg) => ctx.pong(&msg),
-            ws::Message::Text(text) => ctx.text(text),
-            ws::Message::Binary(bin) => ctx.binary(bin),
-            ws::Message::Close(_) => {
+            Ok(ws::Message::Ping(msg)) => ctx.ping(&msg),
+            Ok(ws::Message::Pong(msg)) => ctx.pong(&msg),
+            Ok(ws::Message::Text(text)) => ctx.text(text),
+            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
+            Ok(ws::Message::Close(_)) => {
                 ctx.close(Some(CloseReason {
                     description: Some("Received close frame closing normally".into()),
                     code: CloseCode::Normal,
@@ -175,12 +165,12 @@ impl<T: Serialize + Debug + 'static> StreamHandler<ws::Message, ws::ProtocolErro
                 debug!("Received close message");
                 ctx.stop()
             }
-            ws::Message::Nop => (),
+            Ok(ws::Message::Nop) => (),
         };
     }
 }
 
-#[derive(Debug, Message)]
+#[derive(Debug)]
 enum MessageWrapper<T: Serialize + Debug + 'static> {
     Message(T),
     Shutdown,

@@ -62,10 +62,8 @@ use std::time::{Duration, SystemTime};
 use actix_http::ws;
 use awc::ws::{CloseCode, CloseReason, Codec, Frame, Message};
 use futures::{
+    channel::mpsc::{channel, Sender},
     future::{self, Either},
-    sink::Wait,
-    sync::mpsc::{channel, Sender},
-    Future,
 };
 use hyper::{self, header, upgrade::Upgraded, Body, Client, Request, StatusCode};
 use tokio::codec::{Decoder, Framed};
@@ -84,20 +82,15 @@ const DEFAULT_TIMEOUT: u64 = 300; // default timeout if no message is received f
 /// Wrapper around future created by `WebSocketClient`. In order for
 /// the future to run it must be passed to `Igniter::start_ws`
 pub struct Listen {
-    future: Box<dyn Future<Item = (), Error = WebSocketError> + Send + 'static>,
+    result: Result<(), WebSocketError>,
     sender: Sender<WebSocketClientCmd>,
     running: Arc<AtomicBool>,
 }
 
 impl Listen {
-    pub fn into_shutdown_handle(
-        self,
-    ) -> (
-        Box<dyn Future<Item = (), Error = WebSocketError> + Send + 'static>,
-        ShutdownHandle,
-    ) {
+    pub fn into_shutdown_handle(self) -> (Result<(), WebSocketError>, ShutdownHandle) {
         (
-            self.future,
+            self.result,
             ShutdownHandle {
                 sender: self.sender,
                 running: self.running,
@@ -438,7 +431,7 @@ impl<T: ParseBytes<T> + 'static> WebSocketClient<T> {
 }
 
 fn handle_response(
-    wait_sink: &mut Wait<stream::SplitSink<Framed<Upgraded, Codec>>>,
+    wait_sink: &mut stream::Wait<stream::SplitSink<Framed<Upgraded, Codec>>>,
     res: WsResponse,
     running: Arc<AtomicBool>,
 ) -> Result<(), WebSocketError> {
@@ -468,7 +461,7 @@ fn handle_response(
 }
 
 fn do_shutdown(
-    blocking_sink: &mut Wait<stream::SplitSink<Framed<Upgraded, Codec>>>,
+    blocking_sink: &mut stream::Wait<stream::SplitSink<Framed<Upgraded, Codec>>>,
     close_code: CloseCode,
     running: Arc<AtomicBool>,
 ) -> Result<(), ws::ProtocolError> {

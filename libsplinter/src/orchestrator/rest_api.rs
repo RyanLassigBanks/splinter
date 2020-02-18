@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::actix_web::HttpResponse;
-use crate::futures::IntoFuture;
 use crate::rest_api::{Resource, RestResourceProvider};
 
 use super::ServiceOrchestrator;

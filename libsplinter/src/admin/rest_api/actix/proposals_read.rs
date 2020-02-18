@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 
 use actix_web::{error::BlockingError, web, Error, HttpRequest, HttpResponse};
-use futures::{future::IntoFuture, Future};
 use std::collections::HashMap;
 
 use crate::admin::messages::CircuitProposal;
@@ -37,35 +36,27 @@ pub fn make_list_proposals_resource<A: AdminCommands + Clone + 'static>(
         })
 }
 
-fn list_proposals<A: AdminCommands + Clone + 'static>(
+async fn list_proposals<A: AdminCommands + Clone + 'static>(
     req: HttpRequest,
     admin_commands: web::Data<A>,
-) -> Box<dyn Future<Item = HttpResponse, Error = Error>> {
+) -> Result<HttpResponse, Error> {
     let query: web::Query<HashMap<String, String>> =
         if let Ok(q) = web::Query::from_query(req.query_string()) {
             q
         } else {
-            return Box::new(
-                HttpResponse::BadRequest()
-                    .json(json!({
-                        "message": "Invalid query"
-                    }))
-                    .into_future(),
-            );
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "message": "Invalid query"
+            })));
         };
 
     let offset = match query.get("offset") {
         Some(value) => match value.parse::<usize>() {
             Ok(val) => val,
             Err(err) => {
-                return Box::new(
-                    HttpResponse::BadRequest()
-                        .json(format!(
-                            "Invalid offset value passed: {}. Error: {}",
-                            value, err
-                        ))
-                        .into_future(),
-                )
+                return Ok(HttpResponse::BadRequest().json(format!(
+                    "Invalid offset value passed: {}. Error: {}",
+                    value, err
+                )))
             }
         },
         None => DEFAULT_OFFSET,
@@ -75,14 +66,10 @@ fn list_proposals<A: AdminCommands + Clone + 'static>(
         Some(value) => match value.parse::<usize>() {
             Ok(val) => val,
             Err(err) => {
-                return Box::new(
-                    HttpResponse::BadRequest()
-                        .json(format!(
-                            "Invalid limit value passed: {}. Error: {}",
-                            value, err
-                        ))
-                        .into_future(),
-                )
+                return Ok(HttpResponse::BadRequest().json(format!(
+                    "Invalid limit value passed: {}. Error: {}",
+                    value, err
+                )))
             }
         },
         None => DEFAULT_LIMIT,
@@ -98,23 +85,17 @@ fn list_proposals<A: AdminCommands + Clone + 'static>(
         None => None,
     };
 
-    Box::new(query_list_proposals(
-        admin_commands,
-        link,
-        filters,
-        Some(offset),
-        Some(limit),
-    ))
+    query_list_proposals(admin_commands, link, filters, Some(offset), Some(limit)).await
 }
 
-fn query_list_proposals<A: AdminCommands + Clone + 'static>(
+async fn query_list_proposals<A: AdminCommands + Clone + 'static>(
     admin_commands: web::Data<A>,
     link: String,
     filters: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
-) -> impl Future<Item = HttpResponse, Error = Error> {
-    web::block(move || {
+) -> Result<HttpResponse, Error> {
+    let result = web::block(move || {
         let proposals = admin_commands
             .list_proposals()
             .map_err(|err| ProposalRouteError::InternalError(err.to_string()))?;
@@ -150,7 +131,9 @@ fn query_list_proposals<A: AdminCommands + Clone + 'static>(
             Ok((vec![], link, limit, offset, proposals.total()))
         }
     })
-    .then(|res| match res {
+    .await;
+
+    match result {
         Ok((circuits, link, limit, offset, total_count)) => {
             Ok(HttpResponse::Ok().json(ListProposalsResponse {
                 data: circuits,
@@ -167,5 +150,5 @@ fn query_list_proposals<A: AdminCommands + Clone + 'static>(
             },
             _ => Ok(HttpResponse::InternalServerError().into()),
         },
-    })
+    }
 }

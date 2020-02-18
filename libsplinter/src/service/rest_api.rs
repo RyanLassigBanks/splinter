@@ -14,8 +14,9 @@
 
 use std::sync::Arc;
 
+use futures::future::LocalBoxFuture;
+
 use crate::actix_web::{web, Error as ActixError, HttpRequest, HttpResponse};
-use crate::futures::Future;
 use crate::rest_api::{Continuation, Method, RequestGuard};
 
 use super::Service;
@@ -25,7 +26,7 @@ type Handler = Arc<
             HttpRequest,
             web::Payload,
             &dyn Service,
-        ) -> Box<dyn Future<Item = HttpResponse, Error = ActixError>>
+        ) -> LocalBoxFuture<'static, Result<HttpResponse, ActixError>>
         + Send
         + Sync
         + 'static,

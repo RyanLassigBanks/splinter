@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use actix_web::{error::BlockingError, web, Error, HttpRequest, HttpResponse};
-use futures::Future;
 
 use crate::circuit::store::CircuitStore;
 use crate::protocol;
@@ -33,58 +32,57 @@ pub fn make_fetch_circuit_resource<T: CircuitStore + 'static>(store: T) -> Resou
         })
 }
 
-fn fetch_circuit<T: CircuitStore + 'static>(
+async fn fetch_circuit<T: CircuitStore + 'static>(
     request: HttpRequest,
     store: web::Data<T>,
-) -> Box<dyn Future<Item = HttpResponse, Error = Error>> {
+) -> Result<HttpResponse, Error> {
     let circuit_id = request
         .match_info()
         .get("circuit_id")
         .unwrap_or("")
         .to_string();
-    Box::new(
-        web::block(move || {
-            let circuit = store.circuit(&circuit_id)?;
-            if let Some(circuit) = circuit {
-                let circuit_response = CircuitResponse {
-                    id: circuit_id,
-                    auth: circuit.auth().clone(),
-                    members: circuit.members().to_vec(),
-                    roster: circuit.roster().clone(),
-                    persistence: circuit.persistence().clone(),
-                    durability: circuit.durability().clone(),
-                    routes: circuit.routes().clone(),
-                    circuit_management_type: circuit.circuit_management_type().to_string(),
-                };
-                Ok(circuit_response)
-            } else {
-                Err(CircuitRouteError::NotFound(format!(
-                    "Unable to find circuit: {}",
-                    circuit_id
-                )))
-            }
-        })
-        .then(|res| match res {
-            Ok(circuit) => Ok(HttpResponse::Ok().json(circuit)),
-            Err(err) => match err {
-                BlockingError::Error(err) => match err {
-                    CircuitRouteError::CircuitStoreError(err) => {
-                        error!("{}", err);
-                        Ok(HttpResponse::InternalServerError()
-                            .json(ErrorResponse::internal_error()))
-                    }
-                    CircuitRouteError::NotFound(err) => {
-                        Ok(HttpResponse::NotFound().json(ErrorResponse::not_found(&err)))
-                    }
-                },
-
-                _ => {
+    match web::block(move || {
+        let circuit = store.circuit(&circuit_id)?;
+        if let Some(circuit) = circuit {
+            let circuit_response = CircuitResponse {
+                id: circuit_id,
+                auth: circuit.auth().clone(),
+                members: circuit.members().to_vec(),
+                roster: circuit.roster().clone(),
+                persistence: circuit.persistence().clone(),
+                durability: circuit.durability().clone(),
+                routes: circuit.routes().clone(),
+                circuit_management_type: circuit.circuit_management_type().to_string(),
+            };
+            Ok(circuit_response)
+        } else {
+            Err(CircuitRouteError::NotFound(format!(
+                "Unable to find circuit: {}",
+                circuit_id
+            )))
+        }
+    })
+    .await
+    {
+        Ok(circuit) => Ok(HttpResponse::Ok().json(circuit)),
+        Err(err) => match err {
+            BlockingError::Error(err) => match err {
+                CircuitRouteError::CircuitStoreError(err) => {
                     error!("{}", err);
                     Ok(HttpResponse::InternalServerError().json(ErrorResponse::internal_error()))
                 }
+                CircuitRouteError::NotFound(err) => {
+                    Ok(HttpResponse::NotFound().json(ErrorResponse::not_found(&err)))
+                }
             },
-        }),
-    )
+
+            _ => {
+                error!("{}", err);
+                Ok(HttpResponse::InternalServerError().json(ErrorResponse::internal_error()))
+            }
+        },
+        _ => Ok(HttpResponse::InternalServerError().into()),
+    }
 }
 
 #[cfg(test)]
@@ -106,7 +104,7 @@ mod tests {
         let mut app = test::init_service(
             App::new().data(splinter_state.clone()).service(
                 web::resource("/admin/circuits/{circuit_id}")
-                    .route(web::get().to_async(fetch_circuit::<SplinterState>)),
+                    .route(web::get().to(fetch_circuit::<SplinterState>)),
             ),
         );
 
@@ -129,7 +127,7 @@ mod tests {
         let mut app = test::init_service(
             App::new().data(splinter_state.clone()).service(
                 web::resource("/admin/circuits/{circuit_id}")
-                    .route(web::get().to_async(fetch_circuit::<SplinterState>)),
+                    .route(web::get().to(fetch_circuit::<SplinterState>)),
             ),
         );
 

@@ -20,7 +20,6 @@ use std::fmt::Write;
 use serde::Serializer;
 
 use crate::actix_web::{error::BlockingError, web, HttpResponse};
-use crate::futures::{future::IntoFuture, Future};
 use crate::protocol;
 use crate::rest_api::{
     paging::{get_response_paging_info, Paging, DEFAULT_LIMIT, DEFAULT_OFFSET},

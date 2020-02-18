@@ -27,10 +27,10 @@ description = """\
 repository = "https://github.com/cargill/splinter"
 
 [dependencies]
-actix = { version = "0.8", optional = true, default-features = false }
-actix-http = { version = "0.2", optional = true, features = ["flate2-zlib"] }
-actix-web = { version = "2.0", optional = true, default-features = false, features = ["compress"] }
-actix-web-actors = { version = "1.0", optional = true }
+actix = { version = "0.9", optional = true, default-features = false }
+actix-http = { version = "1.0", optional = true }
+actix-web = { version = "2.0", optional = true }
+actix-web-actors = { version = "2.0", optional = true }
 atomicwrites = "0.2"
 awc = { version = "0.2", optional = true }
 bcrypt = {version = "0.6", optional = true}
@@ -83,6 +83,7 @@ stable = [
     "rest-api-actix",
     "sawtooth-signing-compat",
     "circuit-read",
+    "proposal-read",
 ]
 
 experimental = [
@@ -97,7 +98,6 @@ experimental = [
     "matrix",
     "node-registry-unified",
     "postgres",
-    "proposal-read",
     "scabbard-client",
     "scabbard-get-state",
     "zmq-transport",
