@@ -32,7 +32,7 @@ pub fn make_list_proposals_resource<A: AdminCommands + Clone + 'static>(
             protocol::ADMIN_PROTOCOL_VERSION,
         ))
         .add_method(Method::Get, move |r, _| {
-            list_proposals(r, web::Data::new(admin_commands.clone()))
+            Box::new(list_proposals(r, web::Data::new(admin_commands.clone())))
         })
 }
 

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use actix_web::HttpResponse;
+use futures::future::TryFutureExt;
 
 use crate::admin::service::{AdminCommands, AdminServiceError};
 use crate::protocol;

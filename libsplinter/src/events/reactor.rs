@@ -59,7 +59,7 @@ impl Reactor {
                     match receiver.recv_timeout(Duration::from_millis(500)) {
                         Ok(ReactorMessage::StartWs(listen)) => {
                             let (future, handle) = listen.into_shutdown_handle();
-                            runtime.spawn(future::lazy(|| future.map_err(|_| ())));
+                            runtime.spawn(future::lazy(|_| future.map_err(|_| ())));
                             connections.push(handle);
                         }
                         Ok(ReactorMessage::HttpRequest(req)) => {

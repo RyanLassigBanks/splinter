@@ -110,7 +110,7 @@ impl<T: Serialize + Debug + 'static> StreamHandler<Result<MessageWrapper<T>, ()>
 {
     fn handle(&mut self, msg: Result<MessageWrapper<T>, ()>, ctx: &mut Self::Context) {
         match msg {
-            MessageWrapper::Message(msg) => {
+            Ok(MessageWrapper::Message(msg)) => {
                 debug!("Received a message: {:?}", msg);
                 match serde_json::to_string(&msg) {
                     Ok(text) => ctx.text(text),
@@ -119,7 +119,7 @@ impl<T: Serialize + Debug + 'static> StreamHandler<Result<MessageWrapper<T>, ()>
                     }
                 }
             }
-            MessageWrapper::Shutdown => {
+            Ok(MessageWrapper::Shutdown) => {
                 debug!("Shutting down websocket");
                 ctx.close(Some(CloseReason {
                     description: None,

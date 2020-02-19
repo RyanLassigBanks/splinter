@@ -29,7 +29,7 @@ pub fn make_fetch_proposal_resource<A: AdminCommands + Clone + 'static>(
             protocol::ADMIN_PROTOCOL_VERSION,
         ))
         .add_method(Method::Get, move |r, _| {
-            fetch_proposal(r, web::Data::new(admin_commands.clone()))
+            Box::new(fetch_proposal(r, web::Data::new(admin_commands.clone())))
         })
 }
 

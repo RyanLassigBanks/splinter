@@ -64,6 +64,7 @@ use actix_web::{
     error::ErrorBadRequest, middleware, web, App, Error as ActixError, HttpRequest, HttpResponse,
     HttpServer,
 };
+use futures::future::LocalBoxFuture;
 use futures::StreamExt;
 use percent_encoding::{AsciiSet, CONTROLS};
 use protobuf::{self, Message};
@@ -194,7 +195,10 @@ impl Resource {
     #[deprecated(note = "Please use the `build` and `add_method` methods instead")]
     pub fn new<F>(method: Method, route: &str, handle: F) -> Self
     where
-        F: Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError>
+        F: Fn(
+                HttpRequest,
+                web::Payload,
+            ) -> Box<dyn Future<Output = Result<HttpResponse, ActixError>>>
             + Send
             + Sync
             + 'static,
@@ -212,7 +216,10 @@ impl Resource {
 
     pub fn add_method<F>(mut self, method: Method, handle: F) -> Self
     where
-        F: Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError>
+        F: Fn(
+                HttpRequest,
+                web::Payload,
+            ) -> Box<dyn Future<Output = Result<HttpResponse, ActixError>>>
             + Send
             + Sync
             + 'static,
@@ -525,6 +532,7 @@ impl RestApiBuilder {
 
 pub async fn into_protobuf<M: Message>(payload: web::Payload) -> Result<M, ActixError> {
     let mut bytes = web::BytesMut::new();
+
     while let Some(body) = payload.next().await {
         bytes.extend_from_slice(&body?);
     }

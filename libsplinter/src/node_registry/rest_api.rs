@@ -47,13 +47,13 @@ where
             protocol::ADMIN_PROTOCOL_VERSION,
         ))
         .add_method(Method::Get, move |r, _| {
-            fetch_node(r, web::Data::new(registry.clone()))
+            Box::new(fetch_node(r, web::Data::new(registry.clone())))
         })
         .add_method(Method::Put, move |r, p| {
-            put_node(r, p, web::Data::new(registry1.clone()))
+            Box::new(put_node(r, p, web::Data::new(registry1.clone())))
         })
         .add_method(Method::Delete, move |r, _| {
-            delete_node(r, web::Data::new(registry2.clone()))
+            Box::new(delete_node(r, web::Data::new(registry2.clone())))
         })
 }
 
@@ -68,10 +68,10 @@ where
             protocol::ADMIN_PROTOCOL_VERSION,
         ))
         .add_method(Method::Get, move |r, _| {
-            list_nodes(r, web::Data::new(registry.clone()))
+            Box::new(list_nodes(r, web::Data::new(registry.clone())))
         })
         .add_method(Method::Post, move |_, p| {
-            add_node(p, web::Data::new(registry1.clone()))
+            Box::new(add_node(p, web::Data::new(registry1.clone())))
         })
 }
 

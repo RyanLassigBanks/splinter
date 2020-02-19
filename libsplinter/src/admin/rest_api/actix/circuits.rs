@@ -14,6 +14,7 @@
 
 use actix_web::{error::BlockingError, web, Error, HttpRequest, HttpResponse};
 use std::collections::HashMap;
+use std::pin::Pin;
 
 use crate::circuit::store::CircuitStore;
 use crate::protocol;
@@ -32,7 +33,7 @@ pub fn make_list_circuits_resource<T: CircuitStore + 'static>(store: T) -> Resou
             protocol::ADMIN_PROTOCOL_VERSION,
         ))
         .add_method(Method::Get, move |r, _| {
-            list_circuits(r, web::Data::new(store.clone()))
+            Box::new(list_circuits(r, web::Data::new(store.clone())))
         })
 }
 

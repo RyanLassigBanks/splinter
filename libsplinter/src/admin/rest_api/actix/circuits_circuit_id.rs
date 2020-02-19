@@ -28,7 +28,7 @@ pub fn make_fetch_circuit_resource<T: CircuitStore + 'static>(store: T) -> Resou
             protocol::ADMIN_PROTOCOL_VERSION,
         ))
         .add_method(Method::Get, move |r, _| {
-            fetch_circuit(r, web::Data::new(store.clone()))
+            Box::new(fetch_circuit(r, web::Data::new(store.clone())))
         })
 }
 

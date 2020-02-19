@@ -78,7 +78,6 @@ default = []
 
 stable = [
     "default",
-    "events",
     "rest-api",
     "rest-api-actix",
     "sawtooth-signing-compat",
@@ -87,6 +86,7 @@ stable = [
 ]
 
 experimental = [
+    "events",
     "biome",
     "biome-credentials",
     "biome-key-management",

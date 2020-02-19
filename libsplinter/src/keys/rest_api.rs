@@ -20,6 +20,7 @@ use std::fmt::Write;
 use serde::Serializer;
 
 use crate::actix_web::{error::BlockingError, web, HttpResponse};
+use crate::futures::future::FutureExt;
 use crate::protocol;
 use crate::rest_api::{
     paging::{get_response_paging_info, Paging, DEFAULT_LIMIT, DEFAULT_OFFSET},
@@ -86,11 +87,7 @@ fn make_fetch_key_resource(key_registry: Box<dyn KeyRegistry>) -> Resource {
             let public_key = match parse_hex(req.match_info().get("public_key").unwrap_or("")) {
                 Ok(public_key) => public_key,
                 Err(err_msg) => {
-                    return Box::new(
-                        HttpResponse::BadRequest()
-                            .json(json!({ "message": err_msg }))
-                            .into_future(),
-                    )
+                    return Box::new(HttpResponse::BadRequest().json(json!({ "message": err_msg })))
                 }
             };
 
@@ -111,7 +108,7 @@ fn make_fetch_key_resource(key_registry: Box<dyn KeyRegistry>) -> Resource {
         })
 }
 
-fn make_list_key_resources(key_registry: Box<dyn KeyRegistry>) -> Resource {
+async fn make_list_key_resources(key_registry: Box<dyn KeyRegistry>) -> Resource {
     Resource::build("/admin/keys")
         .add_request_guard(ProtocolVersionRangeGuard::new(
             protocol::ADMIN_LIST_KEYS_MIN,
@@ -122,27 +119,19 @@ fn make_list_key_resources(key_registry: Box<dyn KeyRegistry>) -> Resource {
                 if let Ok(q) = web::Query::from_query(req.query_string()) {
                     q
                 } else {
-                    return Box::new(
-                        HttpResponse::BadRequest()
-                            .json(json!({
-                                "message": "Invalid query"
-                            }))
-                            .into_future(),
-                    );
+                    return Box::new(HttpResponse::BadRequest().json(json!({
+                        "message": "Invalid query"
+                    })));
                 };
 
             let offset = match query.get("offset") {
                 Some(value) => match value.parse::<usize>() {
                     Ok(val) => val,
                     Err(err) => {
-                        return Box::new(
-                            HttpResponse::BadRequest()
-                                .json(format!(
-                                    "Invalid offset value passed: {}. Error: {}",
-                                    value, err
-                                ))
-                                .into_future(),
-                        )
+                        return Box::new(HttpResponse::BadRequest().json(format!(
+                            "Invalid offset value passed: {}. Error: {}",
+                            value, err
+                        )))
                     }
                 },
                 None => DEFAULT_OFFSET,
@@ -152,14 +141,10 @@ fn make_list_key_resources(key_registry: Box<dyn KeyRegistry>) -> Resource {
                 Some(value) => match value.parse::<usize>() {
                     Ok(val) => val,
                     Err(err) => {
-                        return Box::new(
-                            HttpResponse::BadRequest()
-                                .json(format!(
-                                    "Invalid limit value passed: {}. Error: {}",
-                                    value, err
-                                ))
-                                .into_future(),
-                        )
+                        return Box::new(HttpResponse::BadRequest().json(format!(
+                            "Invalid limit value passed: {}. Error: {}",
+                            value, err
+                        )))
                     }
                 },
                 None => DEFAULT_LIMIT,
@@ -169,7 +154,7 @@ fn make_list_key_resources(key_registry: Box<dyn KeyRegistry>) -> Resource {
             let registry = web::Data::new(key_registry.clone());
 
             Box::new(
-                web::block(move || {
+                match web::block(move || {
                     Ok((
                         registry
                             .keys()?
@@ -180,25 +165,24 @@ fn make_list_key_resources(key_registry: Box<dyn KeyRegistry>) -> Resource {
                         registry.count()?,
                     ))
                 })
-                .then(
-                    move |res: Result<(Vec<_>, usize), BlockingError<KeyRegistryError>>| match res {
-                        Ok((data, total_count)) => {
-                            Ok(HttpResponse::Ok().json(json!(ListKeyInfoResponse {
-                                data: data,
-                                paging: get_response_paging_info(
-                                    Some(limit),
-                                    Some(offset),
-                                    &link,
-                                    total_count
-                                )
-                            })))
-                        }
-                        Err(err) => {
-                            error!("unable to list key info: {}", err);
-                            Ok(HttpResponse::InternalServerError().into())
-                        }
-                    },
-                ),
+                .await
+                {
+                    Ok((data, total_count)) => {
+                        Ok(HttpResponse::Ok().json(json!(ListKeyInfoResponse {
+                            data: data,
+                            paging: get_response_paging_info(
+                                Some(limit),
+                                Some(offset),
+                                &link,
+                                total_count
+                            )
+                        })))
+                    }
+                    Err(err) => {
+                        error!("unable to list key info: {}", err);
+                        Ok(HttpResponse::InternalServerError().into())
+                    }
+                },
             )
         })
 }
