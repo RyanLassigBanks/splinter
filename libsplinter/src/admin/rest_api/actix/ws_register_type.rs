@@ -85,7 +85,8 @@ pub fn make_application_handler_registration_route<A: AdminCommands + Clone + 's
                         return Box::new(HttpResponse::InternalServerError().finish());
                     }
                     debug!("Websocket response: {:?}", res);
-                    Box::new(res)
+                    let http_res: HttpResponse = res.into();
+                    Box::new(http_res)
                 }
                 Err(err) => {
                     debug!("Failed to create websocket: {:?}", err);

@@ -57,15 +57,12 @@ pub mod paging;
 mod response_models;
 
 use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 use actix_web::{
     error::ErrorBadRequest, middleware, web, App, Error as ActixError, HttpRequest, HttpResponse,
     HttpServer,
 };
-use futures::future::LocalBoxFuture;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use percent_encoding::{AsciiSet, CONTROLS};
 use protobuf::{self, Message};
 use std::boxed::Box;
@@ -99,7 +96,10 @@ pub trait RestResourceProvider {
 }
 
 pub type HandlerFunction = Box<
-    dyn Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError> + Send + Sync + 'static,
+    dyn Fn(HttpRequest, web::Payload) -> Box<dyn Future<Output = Result<HttpResponse, ActixError>>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// Shutdown handle returned by `RestApi::run`. Allows rest api instance to be shut down
@@ -136,18 +136,9 @@ impl From<HttpResponse> for Response {
     }
 }
 
-impl Future for Response {
-    type Output = Result<HttpResponse, ActixError>;
-
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-        loop {
-            match unsafe { Pin::new_unchecked(&mut this.0) }.poll_next(ctx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(None) => return Poll::Ready(Ok(this.0)),
-                Poll::Ready(Some(res)) => return Poll::Ready(Ok(res)),
-            };
-        }
+impl Into<HttpResponse> for Response {
+    fn into(self) -> HttpResponse {
+        self.0
     }
 }
 
@@ -273,7 +264,7 @@ impl Resource {
             .into_iter()
             .fold(resource, |resource, (method, handler)| {
                 let guards = request_guards.clone();
-                let func = move |r: HttpRequest, p: web::Payload| {
+                let func = move |r: HttpRequest, p: web::Payload| async {
                     // This clone satisfies a requirement that this be FnOnce
                     if !guards.is_empty() {
                         for guard in guards.clone() {
@@ -301,7 +292,7 @@ impl Resource {
 /// return a result.
 pub enum Continuation {
     Continue,
-    Terminate(Result<HttpResponse, ActixError>),
+    Terminate(Box<dyn Future<Output = Result<HttpResponse, ActixError>> + 'static>),
 }
 
 impl Continuation {

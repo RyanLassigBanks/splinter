@@ -14,7 +14,6 @@
 
 use actix_web::{error::BlockingError, web, Error, HttpRequest, HttpResponse};
 use std::collections::HashMap;
-use std::pin::Pin;
 
 use crate::circuit::store::CircuitStore;
 use crate::protocol;

@@ -12,18 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::actix_web::{web, Error as ActixError, HttpRequest};
-use crate::futures::future::BoxFuture;
-use crate::rest_api::{Continuation, Method, RequestGuard, Response};
+use crate::actix_web::{web, Error as ActixError, HttpRequest, HttpResponse};
+use crate::rest_api::{Continuation, Method, RequestGuard};
 
 use super::Service;
 
 type Handler = Arc<
-    dyn Fn(HttpRequest, web::Payload, &dyn Service) -> Result<Response, ActixError>
+    dyn Fn(HttpRequest, web::Payload, &dyn Service) -> Result<HttpResponse, ActixError>
         + Send
         + Sync
         + 'static,

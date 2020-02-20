@@ -53,6 +53,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::io;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -63,11 +64,13 @@ use actix_http::ws;
 use awc::ws::{CloseCode, CloseReason, Codec, Frame, Message};
 use futures::{
     channel::mpsc::{channel, Sender},
+    executor::block_on,
     future::{self, Either},
+    sink, Sink, SinkExt, Stream, StreamExt,
 };
 use hyper::{self, header, upgrade::Upgraded, Body, Client, Request, StatusCode};
-use tokio::codec::{Decoder, Framed};
-use tokio::prelude::*;
+use tokio::stream as TokioStream;
+use tokio_util::codec::{Decoder, Framed};
 
 use crate::events::{Igniter, ParseError, WebSocketError};
 
@@ -280,7 +283,9 @@ impl<T: ParseBytes<T> + 'static> WebSocketClient<T> {
                     let codec = Codec::new().max_size(MAX_FRAME_SIZE).client_mode();
                     let framed = codec.framed(upgraded);
                     let (sink, stream) = framed.split();
-                    let mut blocking_sink = sink.wait();
+                    let mut blocking_sink = async {
+                        block_on(sink.try_next().await);
+                    };
 
                     let source = stream
                         .timeout(Duration::from_secs(timeout))
@@ -431,7 +436,7 @@ impl<T: ParseBytes<T> + 'static> WebSocketClient<T> {
 }
 
 fn handle_response(
-    wait_sink: &mut stream::Wait<stream::SplitSink<Framed<Upgraded, Codec>>>,
+    wait_sink: &mut dyn Sink<Frame<Upgraded, Codec>, Error = WebSocketError>,
     res: WsResponse,
     running: Arc<AtomicBool>,
 ) -> Result<(), WebSocketError> {
@@ -461,7 +466,7 @@ fn handle_response(
 }
 
 fn do_shutdown(
-    blocking_sink: &mut stream::Wait<stream::SplitSink<Framed<Upgraded, Codec>>>,
+    blocking_sink: &mut dyn Sink<Frame<Upgraded, Codec>, Error = ws::ProtocolError>,
     close_code: CloseCode,
     running: Arc<AtomicBool>,
 ) -> Result<(), ws::ProtocolError> {
