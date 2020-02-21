@@ -21,7 +21,6 @@
 //!
 //! ```
 //! use splinter::rest_api::{Resource, Method, RestApiBuilder, RestResourceProvider};
-//! use actix_web::HttpResponse;
 //! use futures::IntoFuture;
 //!
 //! struct IndexResource {
@@ -52,17 +51,17 @@
 //! ```
 
 mod errors;
-mod events;
+//mod events;
 pub mod paging;
 mod response_models;
 
 use std::future::Future;
 
 use actix_web::{
-    error::ErrorBadRequest, middleware, web, App, Error as ActixError, HttpRequest, HttpResponse,
-    HttpServer,
+    dev, error::ErrorBadRequest, middleware, web, App, Error as ActixError, HttpRequest,
+    HttpResponse, HttpServer,
 };
-use futures::{FutureExt, StreamExt};
+use futures::{executor::block_on, FutureExt, StreamExt};
 use percent_encoding::{AsciiSet, CONTROLS};
 use protobuf::{self, Message};
 use std::boxed::Box;
@@ -71,7 +70,7 @@ use std::thread;
 
 pub use errors::{RequestError, ResponseError, RestApiServerError};
 
-pub use events::{new_websocket_event_sender, EventSender};
+//pub use events::{new_websocket_event_sender, EventSender};
 
 pub use response_models::ErrorResponse;
 
@@ -96,21 +95,18 @@ pub trait RestResourceProvider {
 }
 
 pub type HandlerFunction = Box<
-    dyn Fn(HttpRequest, web::Payload) -> Box<dyn Future<Output = Result<HttpResponse, ActixError>>>
-        + Send
-        + Sync
-        + 'static,
+    dyn Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError> + Send + Sync + 'static,
 >;
 
 /// Shutdown handle returned by `RestApi::run`. Allows rest api instance to be shut down
 /// gracefully.
 pub struct RestApiShutdownHandle {
-    do_shutdown: Box<dyn Fn() -> Result<(), RestApiServerError> + Send>,
+    server: dev::Server,
 }
 
 impl RestApiShutdownHandle {
-    pub fn shutdown(&self) -> Result<(), RestApiServerError> {
-        (*self.do_shutdown)()
+    pub fn shutdown(&self) {
+        block_on(self.server.stop(true))
     }
 }
 
@@ -186,10 +182,7 @@ impl Resource {
     #[deprecated(note = "Please use the `build` and `add_method` methods instead")]
     pub fn new<F>(method: Method, route: &str, handle: F) -> Self
     where
-        F: Fn(
-                HttpRequest,
-                web::Payload,
-            ) -> Box<dyn Future<Output = Result<HttpResponse, ActixError>>>
+        F: Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError>
             + Send
             + Sync
             + 'static,
@@ -207,10 +200,7 @@ impl Resource {
 
     pub fn add_method<F>(mut self, method: Method, handle: F) -> Self
     where
-        F: Fn(
-                HttpRequest,
-                web::Payload,
-            ) -> Box<dyn Future<Output = Result<HttpResponse, ActixError>>>
+        F: Fn(HttpRequest, web::Payload) -> Result<HttpResponse, ActixError>
             + Send
             + Sync
             + 'static,
@@ -259,22 +249,37 @@ impl Resource {
     fn into_route(self) -> actix_web::Resource {
         let resource = web::resource(&self.route);
 
-        let request_guards = self.request_guards;
+        let request_guards = self.request_guards.clone();
         self.methods
             .into_iter()
             .fold(resource, |resource, (method, handler)| {
                 let guards = request_guards.clone();
-                let func = move |r: HttpRequest, p: web::Payload| async {
-                    // This clone satisfies a requirement that this be FnOnce
+                let func = move |r: HttpRequest, p: web::Payload| {
                     if !guards.is_empty() {
                         for guard in guards.clone() {
                             match guard.evaluate(&r) {
-                                Continuation::Terminate(result) => return result,
+                                Continuation::Terminate(result) => {
+                                    return match result {
+                                        Ok(r) => r,
+                                        Err(err) => {
+                                            debug!("Internal Server Error: {}", err);
+                                            HttpResponse::InternalServerError()
+                                                .json(json!({ "message": format!("{}", err) }))
+                                        }
+                                    }
+                                }
                                 Continuation::Continue => (),
                             }
                         }
                     }
-                    (handler)(r, p)
+                    match (handler)(r, p) {
+                        Ok(r) => r,
+                        Err(err) => {
+                            debug!("Internal Server Error: {}", err);
+                            HttpResponse::InternalServerError()
+                                .json(json!({ "message": format!("{}", err) }))
+                        }
+                    }
                 };
                 resource.route(match method {
                     Method::Get => web::get().to(func),
@@ -292,16 +297,13 @@ impl Resource {
 /// return a result.
 pub enum Continuation {
     Continue,
-    Terminate(Box<dyn Future<Output = Result<HttpResponse, ActixError>> + 'static>),
+    Terminate(Result<HttpResponse, ActixError>),
 }
 
 impl Continuation {
     /// Wraps the given future in the Continuation::Terminate variant.
-    pub fn terminate<F>(fut: F) -> Continuation
-    where
-        F: Future<Output = Result<HttpResponse, ActixError>> + 'static,
-    {
-        Continuation::Terminate(Box::new(fut))
+    pub fn terminate(res: Result<HttpResponse, ActixError>) -> Continuation {
+        Continuation::Terminate(res)
     }
 }
 
@@ -315,7 +317,7 @@ pub trait RequestGuard: Send + Sync {
 
 impl<F> RequestGuard for F
 where
-    F: Fn(&HttpRequest) -> Continuation + Sync + Send,
+    F: Fn(&HttpRequest) -> Continuation + Sync + Send + 'static,
 {
     fn evaluate(&self, req: &HttpRequest) -> Continuation {
         (*self)(req)
@@ -362,11 +364,11 @@ impl RequestGuard for ProtocolVersionRangeGuard {
                     })
                 });
             match parsed_header {
-                Err(msg) => Continuation::terminate(HttpResponse::BadRequest().json(json!({
+                Err(msg) => Continuation::terminate(Ok(HttpResponse::BadRequest().json(json!({
                     "message": msg,
-                }))),
+                })))),
                 Ok(version) if version < self.min => {
-                    Continuation::terminate(HttpResponse::BadRequest().json(json!({
+                    Continuation::terminate(Ok(HttpResponse::BadRequest().json(json!({
                         "message": format!(
                             "Client must support protocol version {} or greater.",
                             self.min,
@@ -379,10 +381,10 @@ impl RequestGuard for ProtocolVersionRangeGuard {
                             env!("CARGO_PKG_VERSION_MINOR"),
                             env!("CARGO_PKG_VERSION_PATCH")
                         )
-                    })))
+                    }))))
                 }
                 Ok(version) if version > self.max => {
-                    Continuation::terminate(HttpResponse::BadRequest().json(json!({
+                    Continuation::terminate(Ok(HttpResponse::BadRequest().json(json!({
                         "message": format!(
                             "Client requires a newer protocol than can be provided: {} > {}",
                             version,
@@ -396,7 +398,7 @@ impl RequestGuard for ProtocolVersionRangeGuard {
                             env!("CARGO_PKG_VERSION_MINOR"),
                             env!("CARGO_PKG_VERSION_PATCH")
                         )
-                    })))
+                    }))))
                 }
                 Ok(_) => Continuation::Continue,
             }
@@ -456,21 +458,11 @@ impl RestApi {
                 info!("Rest API terminating");
             })?;
 
-        let addr = rx.recv().map_err(|err| {
+        let server = rx.recv().map_err(|err| {
             RestApiServerError::StartUpError(format!("Unable to receive Server Addr: {}", err))
         })?;
 
-        let do_shutdown = Box::new(move || {
-            debug!("Shutting down Rest API");
-            if let Err(err) = addr.stop(true).wait() {
-                error!("An error occured while shutting down rest API: {:?}", err);
-            }
-            debug!("Graceful signal sent to Rest API");
-
-            Ok(())
-        });
-
-        Ok((RestApiShutdownHandle { do_shutdown }, join_handle))
+        Ok((RestApiShutdownHandle { server }, join_handle))
     }
 }
 
@@ -521,7 +513,7 @@ impl RestApiBuilder {
     }
 }
 
-pub async fn into_protobuf<M: Message>(payload: web::Payload) -> Result<M, ActixError> {
+pub async fn into_protobuf<M: Message>(mut payload: web::Payload) -> Result<M, ActixError> {
     let mut bytes = web::BytesMut::new();
 
     while let Some(body) = payload.next().await {
@@ -533,7 +525,7 @@ pub async fn into_protobuf<M: Message>(payload: web::Payload) -> Result<M, Actix
     }
 }
 
-pub async fn into_bytes(payload: web::Payload) -> Result<Vec<u8>, ActixError> {
+pub async fn into_bytes(mut payload: web::Payload) -> Result<Vec<u8>, ActixError> {
     let mut bytes = web::BytesMut::new();
     while let Some(body) = payload.next().await {
         bytes.extend_from_slice(&body?);
